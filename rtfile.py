@@ -63,7 +63,7 @@ def formatCreationDate(torrent) :
 	return ( torrent.creationDate() or "" )
 
 def formatCreationDatePretty(torrent) :
-	return ( datetime.datetime.utcfromtimestamp(torrent.creationDate()) if not torrent.creationDate() is None else "" )
+	return str( datetime.datetime.utcfromtimestamp(torrent.creationDate()) if not torrent.creationDate() is None else "" )
 
 def formatCreatedBy(torrent) :
 	return ( torrent.createdBy() or "" )
@@ -137,7 +137,7 @@ def main() :
 				print_method,
 			))
 	cli_parser.add_argument(      "--without-headers", dest="without_headers_flag", action="store_true")
-	cli_parser.add_argument(      "--magnet-fields",   dest="magnet_fields_list",   nargs="+",      default=None, metavar="<fields>", choices=("dn", "tr"))
+	cli_parser.add_argument(      "--magnet-fields",   dest="magnet_fields_list",   nargs="+",      default=None, metavar="<fields>", choices=tfile.ALL_MAGNET_FIELDS_TUPLE)
 	cli_parser.add_argument("-t", "--timeout",         dest="socket_timeout",       action="store", default=const.DEFAULT_TIMEOUT, type=int, metavar="<seconds>")
 	cli_parser.add_argument(      "--client",          dest="client_name",          action="store", default=None, choices=clients.CLIENTS_MAP.keys(), metavar="<plugin>")
 	cli_parser.add_argument(      "--client-url",      dest="client_url",           action="store", default=None, metavar="<url>")
