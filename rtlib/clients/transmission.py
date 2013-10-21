@@ -73,7 +73,7 @@ class Client(clientlib.AbstractClient) :
 		kwargs_dict = { "paused" : False }
 		if not prefix is None :
 			kwargs_dict["download_dir"] = prefix
-		self.__server.add_torrent(torrent_path, **kwargs_dict)
+		self.__server.add_uri(torrent_path, **kwargs_dict)
 
 	@clientlib.hashOrTorrent
 	def hasTorrent(self, torrent_hash) :
