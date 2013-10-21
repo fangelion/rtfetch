@@ -1,7 +1,7 @@
 # -*- coding: UTF-8 -*-
 #
-#    rtfetch -- Update rtorrent files from popular trackers
-#    Copyright (C) 2013  Bugaevsky Igor <fangel.btr@gmail.com>
+#    transmission client for rtfetch
+#    Copyright (C) 2013  Vitaly Lipatov <lav@etersoft.ru>, Devaev Maxim <mdevaev@gmail.com>
 #
 #    This program is free software: you can redistribute it and/or modify
 #    it under the terms of the GNU General Public License as published by
@@ -21,62 +21,37 @@
 
 from rtlib import clientlib
 
-from ulib import tools
-import ulib.tools.coding # pylint: disable=W0611
-
 import os
 try :
 	import transmissionrpc # pylint: disable=F0401
 except ImportError :
 	transmissionrpc = None # pylint: disable=C0103
-import xmlrpclib
-import time
 
 
 ##### Public constants #####
 CLIENT_NAME = "transmission"
-DEFAULT_URL = "http://localhost:9091/transmission"
+DEFAULT_URL = "http://localhost:9091/transmission/rpc"
 
-XMLRPC_SIZE_LIMIT = 67108863
 LOAD_RETRIES = 10
 LOAD_RETRIES_SLEEP = 1
 
 FAULT_CODE_UNKNOWN_HASH = -501
 
 
-##### Private methods #####
-def _catchUnknownTorrentFault(method) :
-	def wrap(self, *args_list, **kwargs_dict) :
-		try :
-			return method(self, *args_list, **kwargs_dict)
-		except xmlrpclib.Fault, err :
-			if err.faultCode == FAULT_CODE_UNKNOWN_HASH :
-				raise clientlib.NoSuchTorrentError("Unknown torrent hash")
-			raise
-	return wrap
-
-
 ##### Public classes #####
 class Client(clientlib.AbstractClient) :
-	# XXX: API description: https://trac.transmissionbt.com/browser/trunk/extras/rpc-spec.txt
+	# XXX: API description: http://pythonhosted.org/transmissionrpc/
 
-	def __init__(self, url = DEFAULT_URL, user=None, password=None ) :
+	def __init__(self, url = DEFAULT_URL) :
+		if transmissionrpc is None :
+			raise RuntimeError("Required module transmissionrpc")
+
 		if url is None :
 			url = DEFAULT_URL
 		clientlib.AbstractClient.__init__(self, url)
-		if url.find("http://") != -1 :
-			pos = 7
-		else:
-			pos = 0
-		address = url[pos:].split("/")[0].split(":")[0]
-		if url[pos:].find(':') != -1 :
-			port = url[pos:].split("/")[0].split(":")[1]
-		else :
-			port = 9091
-			
 
-		self.__server = transmissionrpc.Client(address='localhost', port=9091, user=None, password=None)
-		#self.__server.set_xmlrpc_size_limit(XMLRPC_SIZE_LIMIT)
+		# Client uses urlparse for get user and password from URL
+		self.__server = transmissionrpc.Client(url)
 
 
 	### Public ###
@@ -86,158 +61,98 @@ class Client(clientlib.AbstractClient) :
 		return CLIENT_NAME
 
 	###
-	
-	def hashToId(torrent_hash):
-		torrents = self.__server.info()
-		torrentId = None
-		for i,j in torrents.items():
-			if j.hash.String == __hash :
-					torrentId = i
-					break
-		return torrentId				
-		
-		
 
 	@clientlib.hashOrTorrent
-	@_catchUnknownTorrentFault
 	def removeTorrent(self, torrent_hash) :
-		#Удаляем торренты, без удаления файлов по их id
-		torrentId = self.hashToId(torrent_hash)
-		self.__server.remove(torrentId)
+		# TODO: raise clientlib.NoSuchTorrentError for non-existent torrent
+		self.__server.remove_torrent(torrent_hash)
 
+	@clientlib.loadTorrentAccessible
 	def loadTorrent(self, torrent, prefix = None) :
 		torrent_path = torrent.path()
-		torrent_hash = torrent.hash()
-
-		assert os.access(torrent_path, os.F_OK), "Torrent file does not exists"
+		kwargs_dict = { "paused" : False }
 		if not prefix is None :
-			assert os.access("%s%s." % (prefix, os.path.sep), os.F_OK), "Invalid prefix"
-
-		
-		if prefix != None :
-			self.__server.add(torrent_path, 'download_dir' = prefix, 'paused' = False)
-		else:
-			self.__server.add(torrent_path, 'paused' = False)
-			
-		"""
-		retries = LOAD_RETRIES
-		while True :
-			try :
-				assert self.__server.d.get_hash(torrent_hash).lower() == torrent_hash
-				break
-			except xmlrpclib.Fault, err :
-				if err.faultCode != FAULT_CODE_UNKNOWN_HASH :
-					raise
-				if retries == 0 :
-					raise RuntimeError("Timed torrent uploads after %d seconds" % (LOAD_RETRIES * LOAD_RETRIES_SLEEP))
-				retries -= 1
-				time.sleep(LOAD_RETRIES_SLEEP)"""
-
+			kwargs_dict["download_dir"] = prefix
+		self.__server.add_torrent(torrent_path, **kwargs_dict)
 
 	@clientlib.hashOrTorrent
 	def hasTorrent(self, torrent_hash) :
-		#Проверка на существование торрента по хэшу.
-		#Возвращает True если существует и False если нет.
-		torrentId = self.hashToId(torrent_hash)
-		if torrentId != None :
+		try :
+			self.__getTorrent(torrent_hash)
 			return True
-		else:
+		except clientlib.NoSuchTorrentError :
 			return False
 
 	def hashes(self) :
-		#Возвращает список хэшей торрентов
-		hashes = []
-		for i in self.__server.info().values():
-			hashes.append(i.hashString)
-		return heshes
+		return [ item.hashString.lower() for item in self.__server.get_torrents(arguments=("id", "hashString")) ]
 
 	@clientlib.hashOrTorrent
-	@_catchUnknownTorrentFault
 	def torrentPath(self, torrent_hash) :
-		#Возвращает путь к .torrent файлу
-		torrentId = self.hashToId(torrent_hash)
-		return self.__server.info(torrentId)[torrentId].torrentFile
+		return self.__getTorrent(torrent_hash).torrentFile
 
 	@clientlib.hashOrTorrent
-	@_catchUnknownTorrentFault
 	def dataPrefix(self, torrent_hash) :
-		#Возвращает каталог, куда качается торрент
-		torrentId = self.hashToId(torrent_hash)
-		return self.__server.info(torrentId)[torrentId].downloadDir
+		return self.__getTorrent(torrent_hash, args_list=("downloadDir",)).downloadDir
 
 	def defaultDataPrefix(self) :
-		#Возвращает дефолтный каталог сессии
-		return tc.get_session().download_dir
-
-	###
-
-	def customKeys(self) :
-		return ("1", "2", "3", "4", "5")
-
-	@clientlib.hashOrTorrent
-	@_catchUnknownTorrentFault
-	def setCustoms(self, torrent_hash, customs_dict) :
-		assert len(customs_dict) != 0, "Empty customs list"
-		multicall = xmlrpclib.MultiCall(self.__server)
-		for (key, value) in customs_dict.iteritems() :
-			getattr(multicall.d, "set_custom" + key)(torrent_hash, value)
-		multicall()
-
-	@clientlib.hashOrTorrent
-	@_catchUnknownTorrentFault
-	def customs(self, torrent_hash, keys_list) :
-		assert len(keys_list) != 0, "Empty customs list"
-		multicall = xmlrpclib.MultiCall(self.__server)
-		for key in keys_list :
-			getattr(multicall.d, "get_custom" + key)(torrent_hash)
-		results_list = list(multicall())
-		return dict([ (keys_list[index], results_list[index]) for index in xrange(len(keys_list)) ])
+		session = self.__server.get_session()
+		assert not session is None
+		return session.download_dir
 
 	###
 
 	@clientlib.hashOrTorrent
-	@_catchUnknownTorrentFault
 	def fullPath(self, torrent_hash) :
-		#Узнать, если файлов больше, то что возвращать?
-		return self.__server.d.get_base_path(torrent_hash)
+		# TODO: raise clientlib.NoSuchTorrentError for non-existent torrent
+		#return self.__server.d.get_base_path(torrent_hash)
+		raise NotImplementedError # TODO
 
 	@clientlib.hashOrTorrent
-	@_catchUnknownTorrentFault
 	def name(self, torrent_hash) :
-		#Возвращаем имя торрента
-		torrentId = self.hashToId(torrent_hash)
-		return self.__server.info(torrentId)[torrentId].name
+		return self.__getTorrent(torrent_hash, args_list=("name",)).name
 
 	@clientlib.hashOrTorrent
-	@_catchUnknownTorrentFault
 	def isSingleFile(self, torrent_hash) :
-		#Возвращает True, если в торренте всего один файл, или False, если их много
-		torrentId = self.hashToId(torrent_hash)
-		count_files = len(self.__server.get_files(torrentId)[torrentId].keys())
-		if count_files > 1:
-			return False
-		else:
+		files_dict = self.__getFiles(torrent_hash)
+		if len(files_dict) > 1 :
 			return True
-			
+		return ( not os.path.sep in files_dict.values()[0]["name"] )
 
 	@clientlib.hashOrTorrent
-	@_catchUnknownTorrentFault
 	def files(self, torrent_hash, system_path_flag = False) :
 		#тут все сложно, нужно вернуть сложный словарь списка файлов.
 		#если установлен system_path_flag, то путь должен быть полным, иначе пути относительно каталога, куда скачиваем торрент
-		torrentId = self.hashToId(torrent_hash)
+		t_files_dict = self.__getFiles(torrent_hash)
 		files_dict = {}
 		dirs_dict = []
-		prefix = ""
-		if system_path_flag :
-			prefix = os.path.sep.join([self.__server.info(torrentId)[torrentId].downloadDir, ""])
+		prefix = ( self.dataPrefix(torrent_hash) if system_path_flag else "" )
 		if self.isSingleFile(torrent_hash):
-			i = self.__server.get_files(torrentId)[torrentId][0]
+			i = t_files_dict[0]
 			return { "".join(prefix,i['name']) : { 'size' : i['size'] }}
-		for i in self.__server.get_files(torrentId)[torrentId].values():
+		for i in t_files_dict.values():
 			dirname = os.path.dirname(i['name'])
-			if dirname not in dir_dict :
-				dir_dict.append(dirname)
+			if dirname not in dirs_dict:
+				dirs_dict.append(dirname)
 				files_dict["".join([prefix,dirname])] = None
 			files_dict["".join([prefix,i['name']])] = { 'size' : i['size'] }
 		return files_dict
+
+	### Private ###
+
+	def __getTorrent(self, torrent_hash, args_list = ()) :
+		args_set = set(args_list).union(("id", "hashString"))
+		torrent_obj = self.__server.get_torrent(torrent_hash, arguments=tuple(args_set))
+		if torrent_obj is None: # FIXME: Is that right?
+			raise clientlib.NoSuchTorrentError("Unknown torrent hash")
+		assert torrent_obj.hashString.lower() == torrent_hash
+		return torrent_obj
+
+	def __getFiles(self, torrent_hash) :
+		files_dict = self.__server.get_file(torrent_hash)
+		if len(files_dict) == 0 : # FIXME: Is that right?
+			raise clientlib.NoSuchTorrentError("Unknown torrent hash")
+		assert len(files_dict) == 1
+		files_dict = files_dict.values()[0]
+		assert len(files_dict) > 0
+		return files_dict
+
