@@ -235,8 +235,8 @@ class Client(clientlib.AbstractClient) :
 			i = self.__server.get_files(torrentId)[torrentId][0]
 			return { "".join(prefix,i['name']) : { 'size' : i['size'] }}
 		for i in self.__server.get_files(torrentId)[torrentId].values():
-			dirname = os.path.dirname(i['name']
-			if dirname not in dir_dict:
+			dirname = os.path.dirname(i['name'])
+			if dirname not in dir_dict :
 				dir_dict.append(dirname)
 				files_dict["".join([prefix,dirname])] = None
 			files_dict["".join([prefix,i['name']])] = { 'size' : i['size'] }
