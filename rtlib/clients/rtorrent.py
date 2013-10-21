@@ -78,13 +78,10 @@ class Client(clientlib.AbstractClient) :
 	def removeTorrent(self, torrent_hash) :
 		self.__server.d.erase(torrent_hash)
 
+	@clientlib.loadTorrentAccessible
 	def loadTorrent(self, torrent, prefix = None) :
 		torrent_path = torrent.path()
 		torrent_hash = torrent.hash()
-
-		assert os.access(torrent_path, os.F_OK), "Torrent file does not exists"
-		if not prefix is None :
-			assert os.access("%s%s." % (prefix, os.path.sep), os.F_OK), "Invalid prefix"
 
 		# XXX: https://github.com/rakshasa/rtorrent/issues/22
 		# All load_* calls re asynchronous, so we need to wait until the load of torrent files is complete.
@@ -140,7 +137,8 @@ class Client(clientlib.AbstractClient) :
 
 	###
 
-	def customKeys(self) :
+	@classmethod
+	def customKeys(cls) :
 		return ("1", "2", "3", "4", "5")
 
 	@clientlib.hashOrTorrent
@@ -156,6 +154,7 @@ class Client(clientlib.AbstractClient) :
 	@_catchUnknownTorrentFault
 	def customs(self, torrent_hash, keys_list) :
 		assert len(keys_list) != 0, "Empty customs list"
+		keys_list = list(set(keys_list))
 		multicall = xmlrpclib.MultiCall(self.__server)
 		for key in keys_list :
 			getattr(multicall.d, "get_custom" + key)(torrent_hash)

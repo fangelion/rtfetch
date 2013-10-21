@@ -22,18 +22,24 @@
 import const
 import tfile
 
-from ulib import tools
-import ulib.tools.coding # pylint: disable=W0611
+import ulib.tools.coding
+import ulib.tools.url
 
 import socket
 import urllib2
+import urlparse
+import types
 import json
 import time
 
 
 ##### Public constants #####
+DEFAULT_LOGIN = ""
+DEFAULT_PASSWD = ""
 DEFAULT_URL_RETRIES = 10
 DEFAULT_URL_SLEEP_TIME = 1
+DEFAULT_PROXY_URL = None
+DEFAULT_INTERACTIVE_FLAG = False
 
 VERSIONS_URL = const.RAW_UPSTREAM_URL + "/fetchers.json"
 
@@ -58,6 +64,23 @@ def selectFetcher(torrent, fetchers_list) :
 
 
 ###
+def buildTypicalOpener(cookie_jar = None, proxy_url = None) :
+	handlers_list = []
+	if not cookie_jar is None :
+		handlers_list.append(urllib2.HTTPCookieProcessor(cookie_jar))
+	if not proxy_url is None :
+		scheme = ( urlparse.urlparse(proxy_url).scheme or "" ).lower()
+		if scheme == "http" :
+			handlers_list.append(urllib2.ProxyHandler({
+					"http"  : proxy_url,
+					"https" : proxy_url,
+				}))
+		elif scheme in ("socks4", "socks5") :
+			handlers_list.append(ulib.tools.url.SocksHandler(proxy_url=proxy_url))
+		else :
+			raise RuntimeError("Invalid proxy protocol: %s" % (scheme))
+	return urllib2.build_opener(*handlers_list)
+
 def readUrlRetry(*args_list, **kwargs_dict) :
 	opener = kwargs_dict.pop("opener", None)
 	if opener is None :
@@ -98,19 +121,19 @@ def checkVersions(fetchers_list) :
 			print "#    Local version:    %d" % (local_version)
 			print "#    Upstream version: %d" % (upstream_version)
 			print "# The plugin can not work properly. It is recommended to upgrade the program."
-			print
 			ok_flag = False
 	return ok_flag
 
 
 ##### Public classes #####
 class AbstractFetcher(object) :
-	def __init__(self, user_name, passwd, url_retries, url_sleep_time, interactive_flag) :
+	def __init__(self, user_name, passwd, url_retries, url_sleep_time, proxy_url, interactive_flag) :
 		object.__init__(self)
 		assert isinstance(user_name, basestring)
 		assert isinstance(passwd, basestring)
 		assert isinstance(url_retries, (int, long))
 		assert isinstance(url_sleep_time, (int, long))
+		assert isinstance(proxy_url, (basestring, types.NoneType))
 		assert isinstance(interactive_flag, bool)
 
 
@@ -158,7 +181,7 @@ class AbstractFetcher(object) :
 		self.assertFetcher(self.match(torrent), "No comment match")
 
 	def assertValidTorrentData(self, data) :
-		message = "Received an invalid torrent data: %s ..." % (tools.coding.utf8(data[:20]))
+		message = "Received an invalid torrent data: %s ..." % (ulib.tools.coding.utf8(data[:20]))
 		self.assertFetcher(tfile.isValidTorrentData(data), message)
 
 

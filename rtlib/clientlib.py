@@ -19,7 +19,11 @@
 #####
 
 
+import os
+
 import tfile
+
+import ulib.validators.common
 
 
 ##### Exceptions #####
@@ -28,6 +32,15 @@ class NoSuchTorrentError(Exception) :
 
 
 ##### Public methods #####
+def initClient(client_class, client_url, save_customs_list = (), set_customs_dict = None) :
+	set_customs_dict = ( set_customs_dict or {} )
+	valid_customs_list = client_class.customKeys()
+	for custom_key in list(save_customs_list) + list(set_customs_dict) :
+		ulib.validators.common.validRange(custom_key, valid_customs_list)
+	return client_class(client_url)
+
+
+###
 def indexed(client, system_path_flag = False) :
 	files_dict = {}
 	for torrent_hash in client.hashes() :
@@ -43,6 +56,15 @@ def hashOrTorrent(method) :
 		if isinstance(torrent_hash, tfile.Torrent) :
 			torrent_hash = torrent_hash.hash()
 		return method(self, torrent_hash, *args_list, **kwargs_dict)
+	return wrap
+
+def loadTorrentAccessible(method) :
+	def wrap(self, torrent, prefix = None) :
+		torrent_path = torrent.path()
+		open(torrent_path).close() # Check accessible file
+		if not prefix is None :
+			os.listdir(prefix) # Check accessible prefix
+		return method(self, torrent, prefix)
 	return wrap
 
 
@@ -65,6 +87,7 @@ class AbstractClient(object) :
 	def removeTorrent(self, torrent_hash) :
 		raise NotImplementedError
 
+	@loadTorrentAccessible
 	def loadTorrent(self, torrent, prefix = None) :
 		raise NotImplementedError
 
@@ -88,16 +111,17 @@ class AbstractClient(object) :
 
 	###
 
-	def customKeys(self) :
-		raise NotImplementedError
+	@classmethod
+	def customKeys(cls) :
+		return ()
 
 	@hashOrTorrent
 	def setCustoms(self, torrent_hash, customs_dict) :
-		raise NotImplementedError
+		pass
 
 	@hashOrTorrent
 	def customs(self, torrent_hash, keys_list) :
-		raise NotImplementedError
+		return {}
 
 	###
 

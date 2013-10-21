@@ -20,11 +20,12 @@
 #####
 
 
-from rtlib import const
 from rtlib import tfile
 from rtlib import fetcherlib
 from rtlib import fetchers
+from rtlib import clientlib
 from rtlib import clients
+from rtlib import config
 
 from ulib import tools
 import ulib.tools.cli # pylint: disable=W0611
@@ -34,8 +35,6 @@ import sys
 import os
 import socket
 import operator
-import argparse
-import ConfigParser
 import shutil
 import time
 
@@ -45,19 +44,19 @@ DELIMITER = "-" * 10
 
 
 ##### Public methods #####
-def updateTorrent(torrent, fetcher, backup_dir_path, client, save_customs_list, noop_flag) :
+def updateTorrent(torrent, fetcher, backup_dir_path, client, save_customs_list, real_update_flag) :
 	new_data = fetcher.fetchTorrent(torrent)
 	tmp_torrent = tfile.Torrent()
 	tmp_torrent.loadData(new_data)
 	diff_tuple = tfile.diff(torrent, tmp_torrent)
 
-	if not noop_flag :
+	if real_update_flag :
 		if not backup_dir_path is None :
 			backup_file_path = os.path.join(backup_dir_path, "%s.%d.bak" % (os.path.basename(torrent.path()), time.time()))
 			shutil.copyfile(torrent.path(), backup_file_path)
 
 		if not client is None :
-			if not save_customs_list is None :
+			if len(save_customs_list) != 0 :
 				customs_dict = client.customs(torrent, save_customs_list)
 			prefix = client.dataPrefix(torrent)
 			client.removeTorrent(torrent)
@@ -68,7 +67,7 @@ def updateTorrent(torrent, fetcher, backup_dir_path, client, save_customs_list, 
 
 		if not client is None :
 			client.loadTorrent(torrent, prefix)
-			if not save_customs_list is None :
+			if len(save_customs_list) != 0 :
 				client.setCustoms(torrent, customs_dict)
 
 	return diff_tuple
@@ -87,10 +86,12 @@ def update(fetchers_list, client,
 		names_filter,
 		save_customs_list,
 		skip_unknown_flag,
-		show_failed_login_flag,
+		pass_failed_login_flag,
 		show_passed_flag,
 		show_diff_flag,
-		noop_flag,
+		real_update_flag,
+		no_colors_flag,
+		force_colors_flag,
 	) :
 
 	invalid_count = 0
@@ -103,18 +104,24 @@ def update(fetchers_list, client,
 	torrents_list = torrents(src_dir_path, names_filter)
 	hashes_list = ( client.hashes() if not client is None else [] )
 
+	if not no_colors_flag :
+		colored = ( lambda codes_list, text : ulib.tools.term.colored(codes_list, text, force_colors_flag) )
+	else :
+		colored = ( lambda codes_list, text : text )
+	make_fail = ( lambda text : (colored(31, "!"), colored(31, text)) )
+
 	for (count, (torrent_file_name, torrent)) in enumerate(torrents_list) :
 		status_line = "[%%s] %s %%s %s" % (tools.fmt.formatProgress(count + 1, len(torrents_list)), torrent_file_name)
 
 		if torrent is None :
-			tools.cli.newLine(status_line % ("!", "INVALID_TORRENT"))
+			tools.cli.newLine(status_line % (make_fail("INVALID_TORRENT")))
 			invalid_count += 1
 			continue
 
 		status_line += " --- %s" % (torrent.comment() or "")
 
 		if not client is None and not torrent.hash() in hashes_list :
-			tools.cli.newLine(status_line % ("!", "NOT_IN_CLIENT"))
+			tools.cli.newLine(status_line % (make_fail("NOT_IN_CLIENT")))
 			not_in_client_count += 1
 			continue
 
@@ -122,13 +129,13 @@ def update(fetchers_list, client,
 		if fetcher is None :
 			unknown_count += 1
 			if not skip_unknown_flag :
-				tools.cli.newLine(status_line % ("!", "UNKNOWN"))
+				tools.cli.newLine(status_line % (make_fail("UNKNOWN")))
 			continue
 
 		status_line = status_line % ("%s", fetcher.plugin())
 		try :
 			if not fetcher.loggedIn() :
-				tools.cli.newLine(status_line % ("?"))
+				tools.cli.newLine(status_line % (colored(33, "?")))
 				error_count += 1
 				continue
 
@@ -137,14 +144,14 @@ def update(fetchers_list, client,
 				passed_count += 1
 				continue
 
-			diff_tuple = updateTorrent(torrent, fetcher, backup_dir_path, client, save_customs_list, noop_flag)
-			tools.cli.newLine(status_line % ("+"))
+			diff_tuple = updateTorrent(torrent, fetcher, backup_dir_path, client, save_customs_list, real_update_flag)
+			tools.cli.newLine(status_line % (colored(32, "+")))
 			if show_diff_flag :
-				tfile.printDiff(diff_tuple, "\t")
+				tfile.printDiff(diff_tuple, "\t", use_colors_flag=(not no_colors_flag), force_colors_flag=force_colors_flag)
 			updated_count += 1
 
 		except fetcherlib.CommonFetcherError, err :
-			tools.cli.newLine((status_line + " :: %s(%s)") % ("-", type(err).__name__, str(err)))
+			tools.cli.newLine((status_line + " :: %s(%s)") % (colored(31, "-"), type(err).__name__, str(err)))
 			error_count += 1
 
 		except Exception, err :
@@ -152,8 +159,11 @@ def update(fetchers_list, client,
 			tools.cli.printTraceback("\t")
 			error_count += 1
 
-	tools.cli.newLine("")
-	print DELIMITER
+	if ( (client and not_in_client_count) or (not skip_unknown_flag and unknown_count) or (show_passed_flag and passed_count) or
+		invalid_count or updated_count or error_count ) :
+		tools.cli.newLine("")
+	tools.cli.newLine(DELIMITER)
+
 	print "Invalid:       %d" % (invalid_count)
 	if not client is None :
 		print "Not in client: %d" % (not_in_client_count)
@@ -165,63 +175,96 @@ def update(fetchers_list, client,
 
 
 ###
-def initFetchers(config_file_path, url_retries, url_sleep_time, interactive_flag, only_fetchers_list, show_failed_login_flag) :
+def initFetchers(config_dict, url_retries, url_sleep_time, proxy_url, interactive_flag, only_fetchers_list, pass_failed_login_flag) :
 	fetchers_list = []
-	config_parser = ConfigParser.ConfigParser()
-	config_parser.read(config_file_path)
-	enabled_fetchers_set = set(fetchers.FETCHERS_MAP.keys()).intersection(only_fetchers_list)
-	for fetcher_name in enabled_fetchers_set :
+	for fetcher_name in set(fetchers.FETCHERS_MAP.keys()).intersection(only_fetchers_list) :
+		get_fetcher_option = ( lambda option : config.getOption(fetcher_name, option, config_dict) )
+		get_common_option = ( lambda option, cli_value : config.getCommonOption((
+			config.SECTION_MAIN, config.SECTION_RTFETCH, fetcher_name), option, config_dict, cli_value) )
+
 		fetcher_class = fetchers.FETCHERS_MAP[fetcher_name]
-		if config_parser.has_section(fetcher_name) :
-			fetcher = fetcher_class(
-				config_parser.get(fetcher_name, "login"),
-				config_parser.get(fetcher_name, "passwd"),
-				url_retries,
-				url_sleep_time,
-				interactive_flag,
-			)
+		if config_dict.has_key(fetcher_name) :
+			tools.cli.oneLine("# Enabling the fetcher \"%s\"..." % (fetcher_name))
+
+			f_login            = get_fetcher_option(config.OPTION_LOGIN)
+			f_passwd           = get_fetcher_option(config.OPTION_PASSWD)
+			f_url_retries      = get_common_option(config.OPTION_URL_RETRIES, url_retries)
+			f_url_sleep_time   = get_common_option(config.OPTION_URL_SLEEP_TIME, url_sleep_time)
+			f_proxy_url        = get_common_option(config.OPTION_PROXY_URL, proxy_url)
+			f_interactive_flag = get_common_option(config.OPTION_INTERACTIVE, interactive_flag)
+
 			try :
+				fetcher = fetcher_class(f_login, f_passwd, f_url_retries, f_url_sleep_time, f_proxy_url, f_interactive_flag)
 				fetcher.login()
-			except fetcherlib.LoginError, err :
-				if not show_failed_login_flag :
+				tools.cli.newLine("# Fetcher \"%s\" is ready (user: %s; proxy: %s; interactive: %s)" % (
+						fetcher_name,
+						( f_login or "<anonymous>" ),
+						( f_proxy_url or "<none>" ),
+						( "yes" if f_interactive_flag else "no" ),
+					))
+			except Exception, err :
+				tools.cli.newLine("# Init error: %s: %s(%s)" % (fetcher_name, type(err).__name__, err))
+				if not pass_failed_login_flag :
 					raise
-				print ":: %s: %s(%s)" % (fetcher_name, type(err).__name__, str(err))
 			fetchers_list.append(fetcher)
 	return fetchers_list
 
 
 ##### Main #####
 def main() :
-	cli_parser = argparse.ArgumentParser(description="Update rtorrent files from popular trackers")
-	cli_parser.add_argument("-c", "--config",         dest="config_file_path",    action="store",      required=True, metavar="<file>")
-	cli_parser.add_argument("-s", "--source-dir",     dest="src_dir_path",        action="store",      default=".",   metavar="<dir>")
-	cli_parser.add_argument("-b", "--backup-dir",     dest="backup_dir_path",     action="store",      default=None,  metavar="<dir>")
-	cli_parser.add_argument("-f", "--filter",         dest="names_filter",        action="store",      default=None,  metavar="<substring>")
-	cli_parser.add_argument("-o", "--only-fetchers",  dest="only_fetchers_list",  nargs="+",           default=fetchers.FETCHERS_MAP.keys(), metavar="<plugin>")
-	cli_parser.add_argument("-t", "--timeout",        dest="socket_timeout",      action="store",      default=const.DEFAULT_TIMEOUT, type=int, metavar="<seconds>")
-	cli_parser.add_argument("-i", "--interactive",    dest="interactive_flag",    action="store_true", default=False)
-	cli_parser.add_argument("-u", "--skip-unknown",   dest="skip_unknown_flag",   action="store_true", default=False)
-	cli_parser.add_argument("-l", "--show-failed-login", dest="show_failed_login_flag", action="store_true", default=False)
-	cli_parser.add_argument("-p", "--show-passed",    dest="show_passed_flag",    action="store_true", default=False)
-	cli_parser.add_argument("-d", "--show-diff",      dest="show_diff_flag",      action="store_true", default=False)
-	cli_parser.add_argument("-k", "--check-versions", dest="check_versions_flag", action="store_true", default=False)
-	cli_parser.add_argument("-n", "--noop",           dest="noop_flag",           action="store_true", default=False)
-	cli_parser.add_argument(      "--url-retries",    dest="url_retries",         action="store",      default=fetcherlib.DEFAULT_URL_RETRIES, type=int, metavar="<number>")
-	cli_parser.add_argument(      "--url-sleep-time", dest="url_sleep_time",      action="store",      default=fetcherlib.DEFAULT_URL_SLEEP_TIME, type=int, metavar="<seconds>")
-	cli_parser.add_argument(      "--client",         dest="client_name",         action="store",      default=None, choices=clients.CLIENTS_MAP.keys(), metavar="<plugin>")
-	cli_parser.add_argument(      "--client-url",     dest="client_url",          action="store",      default=None, metavar="<url>")
-	cli_parser.add_argument(      "--save-customs",   dest="save_customs_list",   nargs="+",           default=None, metavar="<keys>")
-	cli_options = cli_parser.parse_args(sys.argv[1:])
+	(cli_parser, config_dict, argv_list) = config.partialParser(sys.argv[1:], description="Update rtorrent files from popular trackers")
+	config.addArguments(cli_parser,
+		config.ARG_SOURCE_DIR,
+		config.ARG_BACKUP_DIR,
+		config.ARG_NAMES_FILTER,
+		config.ARG_ONLY_FETCHERS,
+		config.ARG_TIMEOUT,
+		config.ARG_INTERACTIVE,
+		config.ARG_NO_INTERACTIVE,
+		config.ARG_SKIP_UNKNOWN,
+		config.ARG_NO_SKIP_UNKNOWN,
+		config.ARG_PASS_FAILED_LOGIN,
+		config.ARG_NO_PASS_FAILED_LOGIN,
+		config.ARG_SHOW_PASSED,
+		config.ARG_NO_SHOW_PASSED,
+		config.ARG_SHOW_DIFF,
+		config.ARG_NO_SHOW_DIFF,
+		config.ARG_CHECK_VERSIONS,
+		config.ARG_NO_CHECK_VERSIONS,
+		config.ARG_REAL_UPDATE,
+		config.ARG_NO_REAL_UPDATE,
+		config.ARG_URL_RETRIES,
+		config.ARG_URL_SLEEP_TIME,
+		config.ARG_PROXY_URL,
+		config.ARG_CLIENT,
+		config.ARG_CLIENT_URL,
+		config.ARG_SAVE_CUSTOMS,
+		config.ARG_NO_COLORS,
+		config.ARG_USE_COLORS,
+		config.ARG_FORCE_COLORS,
+		config.ARG_NO_FORCE_COLORS,
+	)
+	cli_options = cli_parser.parse_args(argv_list)
+	config.syncParsers(config.SECTION_RTFETCH, cli_options, config_dict, (
+			# For fetchers: validate this options later
+			config.OPTION_LOGIN,
+			config.OPTION_PASSWD,
+			config.OPTION_URL_RETRIES,
+			config.OPTION_URL_SLEEP_TIME,
+			config.OPTION_PROXY_URL,
+			config.OPTION_INTERACTIVE,
+		))
+
 
 	socket.setdefaulttimeout(cli_options.socket_timeout)
 
-	fetchers_list = initFetchers(
-		cli_options.config_file_path,
+	fetchers_list = initFetchers(config_dict,
 		cli_options.url_retries,
 		cli_options.url_sleep_time,
+		cli_options.proxy_url,
 		cli_options.interactive_flag,
 		cli_options.only_fetchers_list,
-		cli_options.show_failed_login_flag,
+		cli_options.pass_failed_login_flag,
 	)
 	if len(fetchers_list) == 0 :
 		print >> sys.stderr, "No available fetchers in config"
@@ -232,19 +275,15 @@ def main() :
 	if cli_options.check_versions_flag and not fetcherlib.checkVersions(fetchers_list) :
 		sys.exit(1)
 
+	print
+
 	client = None
 	if not cli_options.client_name is None :
-		client_class = clients.CLIENTS_MAP[cli_options.client_name]
-		client = client_class(cli_options.client_url)
-
-		if not cli_options.save_customs_list is None :
-			cli_options.save_customs_list = list(set(cli_options.save_customs_list))
-			valid_keys_list = client.customKeys()
-			for key in cli_options.save_customs_list :
-				if not key in valid_keys_list :
-					print >> sys.stderr, "Invalid custom key: %s" % (key)
-					sys.exit(1)
-
+		client = clientlib.initClient(
+			clients.CLIENTS_MAP[cli_options.client_name],
+			cli_options.client_url,
+			save_customs_list=cli_options.save_customs_list,
+		)
 
 	update(fetchers_list, client,
 		cli_options.src_dir_path,
@@ -252,10 +291,12 @@ def main() :
 		cli_options.names_filter,
 		cli_options.save_customs_list,
 		cli_options.skip_unknown_flag,
-		cli_options.show_failed_login_flag,
+		cli_options.pass_failed_login_flag,
 		cli_options.show_passed_flag,
 		cli_options.show_diff_flag,
-		cli_options.noop_flag,
+		cli_options.real_update_flag,
+		cli_options.no_colors_flag,
+		cli_options.force_colors_flag,
 	)
 
 

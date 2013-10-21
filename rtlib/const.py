@@ -20,7 +20,7 @@
 
 
 ##### Public constants #####
-VERSION_TUPLE = (0, 3)
+VERSION_TUPLE = (0, 6)
 VERSION = ".".join(map(str, VERSION_TUPLE))
 
 UPSTREAM_URL = "https://github.com/mdevaev/rtfetch"
@@ -28,9 +28,4 @@ RAW_UPSTREAM_URL = "https://raw.github.com/mdevaev/rtfetch/master"
 
 BROWSER_USER_AGENT = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.1 (KHTML, like Gecko) Chrome/21.0.1180.89 Safari/537.1"
 CLIENT_USER_AGENT = "rtorrent/0.9.2/0.13.2"
-
-
-###
-DEFAULT_TIMEOUT = 5
-
 
