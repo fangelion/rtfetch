@@ -1,7 +1,7 @@
 # -*- coding: UTF-8 -*-
 #
 #    rtfetch -- Update rtorrent files from popular trackers
-#    Copyright (C) 2012  Devaev Maxim <mdevaev@gmail.com>
+#    Copyright (C) 2013  Bugaevsky Igor <fangel.btr@gmail.com>
 #
 #    This program is free software: you can redistribute it and/or modify
 #    it under the terms of the GNU General Public License as published by
@@ -25,7 +25,10 @@ from ulib import tools
 import ulib.tools.coding # pylint: disable=W0611
 
 import os
-import transmissionrpc
+try :
+	import transmissionrpc # pylint: disable=F0401
+except ImportError :
+	transmissionrpc = None # pylint: disable=C0103
 import xmlrpclib
 import time
 
